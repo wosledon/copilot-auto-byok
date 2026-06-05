@@ -186,32 +186,8 @@ public class MetricsService : IMetricsService
             current = current.AddHours(1);
         }
 
-        // SQLite EF doesn't support string formatting in groupby, use raw SQL via FromSqlRaw
-        var sql = @"
-            SELECT 
-                substr(timestamp, 1, 13) as hour_key,
-                actual_model,
-                provider,
-                COUNT(*) as requests,
-                COALESCE(SUM(total_tokens), 0) as tokens,
-                COALESCE(AVG(latency_ms), 0) as avg_latency,
-                COALESCE(AVG(tokens_per_second), 0) as avg_tps,
-                COALESCE(SUM(estimated_cost), 0) as cost
-            FROM request_metrics
-            WHERE timestamp >= {0}
-            GROUP BY substr(timestamp, 1, 13), actual_model, provider
-            ORDER BY hour_key";
-
-        var fromStr = from.ToString("O");
-        var rawData = await context.RequestMetrics
-            .FromSqlRaw(sql, fromStr)
-            .AsNoTracking()
-            .ToListAsync();
-
-        // Since FromSqlRaw returns entities, we need a different approach.
-        // Use a custom DTO with EF's raw query capability.
-        // Actually, let's use a simpler approach: query all data in period and aggregate in memory.
-
+        // Query all data in period and aggregate in memory (SQLite EF doesn't support
+        // string formatting in GroupBy, so raw SQL is avoided here).
         var allData = await context.RequestMetrics
             .AsNoTracking()
             .Where(r => r.Timestamp >= from)

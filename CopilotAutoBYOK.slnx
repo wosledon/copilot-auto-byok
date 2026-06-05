@@ -1,5 +1,6 @@
 <Solution>
-  <Folder Name="/src/">
-    <Project Path="src/copilot-auto-byok.csproj" />
+  <Folder Name="/src/" />
+  <Folder Name="/src/CopilotAutoBYOK/">
+    <Project Path="src/CopilotAutoBYOK/copilot-auto-byok.csproj" />
   </Folder>
 </Solution>

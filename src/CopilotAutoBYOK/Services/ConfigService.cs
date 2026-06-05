@@ -8,6 +8,7 @@ namespace copilot_auto_byok.Services;
 public class ConfigService : IConfigService
 {
     private readonly IDbContextFactory<AppDbContext> _contextFactory;
+    private readonly object _autoPilotLock = new();
 
     public ConfigService(IDbContextFactory<AppDbContext> contextFactory)
     {
@@ -18,7 +19,7 @@ public class ConfigService : IConfigService
         context.Database.EnsureCreated();
 
         // Apply persisted BYOK env on startup in background to avoid blocking
-        var byok = context.ByokEnv.FirstOrDefault();
+        var byok = context.ByokEnv.OrderBy(e => e.Id).FirstOrDefault();
         if (byok != null && !string.IsNullOrWhiteSpace(byok.ProviderBaseUrl))
         {
             var config = MapToModel(byok);
@@ -102,24 +103,44 @@ public class ConfigService : IConfigService
     public AutoCopilotBinding GetAutoCopilotBinding()
     {
         using var context = _contextFactory.CreateDbContext();
-        var entity = context.AutoCopilot.FirstOrDefault();
-        if (entity == null)
+        var entity = context.AutoCopilot.OrderBy(e => e.Id).FirstOrDefault();
+        if (entity != null)
         {
-            entity = new AutoCopilotBindingEntity();
-            context.AutoCopilot.Add(entity);
-            context.SaveChanges();
+            return new AutoCopilotBinding
+            {
+                CurrentModel = entity.CurrentModel,
+                CurrentProviderId = entity.CurrentProviderId
+            };
         }
-        return new AutoCopilotBinding
+
+        lock (_autoPilotLock)
         {
-            CurrentModel = entity.CurrentModel,
-            CurrentProviderId = entity.CurrentProviderId
-        };
+            using var context2 = _contextFactory.CreateDbContext();
+            entity = context2.AutoCopilot.OrderBy(e => e.Id).FirstOrDefault();
+            if (entity != null)
+            {
+                return new AutoCopilotBinding
+                {
+                    CurrentModel = entity.CurrentModel,
+                    CurrentProviderId = entity.CurrentProviderId
+                };
+            }
+
+            entity = new AutoCopilotBindingEntity();
+            context2.AutoCopilot.Add(entity);
+            context2.SaveChanges();
+            return new AutoCopilotBinding
+            {
+                CurrentModel = entity.CurrentModel,
+                CurrentProviderId = entity.CurrentProviderId
+            };
+        }
     }
 
     public void UpdateAutoCopilotBinding(AutoCopilotBinding binding)
     {
         using var context = _contextFactory.CreateDbContext();
-        var entity = context.AutoCopilot.FirstOrDefault();
+        var entity = context.AutoCopilot.OrderBy(e => e.Id).FirstOrDefault();
         if (entity == null)
         {
             entity = new AutoCopilotBindingEntity();
@@ -167,14 +188,14 @@ public class ConfigService : IConfigService
     public ByokEnvConfig GetByokEnv()
     {
         using var context = _contextFactory.CreateDbContext();
-        var entity = context.ByokEnv.FirstOrDefault();
+        var entity = context.ByokEnv.OrderBy(e => e.Id).FirstOrDefault();
         return entity == null ? new ByokEnvConfig() : MapToModel(entity);
     }
 
     public void UpdateByokEnv(ByokEnvConfig config)
     {
         using var context = _contextFactory.CreateDbContext();
-        var entity = context.ByokEnv.FirstOrDefault();
+        var entity = context.ByokEnv.OrderBy(e => e.Id).FirstOrDefault();
         if (entity == null)
         {
             entity = new ByokEnvConfigEntity();
@@ -193,7 +214,9 @@ public class ConfigService : IConfigService
         entity.ProviderMaxOutputTokens = config.ProviderMaxOutputTokens;
         context.SaveChanges();
 
-        ApplyByokEnvToUser(config);
+        // Fire-and-forget: setting user env vars touches the Windows registry
+        // and can block the request thread, so run it in the background.
+        Task.Run(() => ApplyByokEnvToUser(config));
     }
 
     // ===== Mapping =====
