@@ -15,34 +15,29 @@ public class AuthMiddleware
 
     public async Task InvokeAsync(HttpContext context, IConfigService configService)
     {
-        _logger.LogInformation("AuthMiddleware processing: {Path}", context.Request.Path);
+        var path = context.Request.Path.Value ?? "";
 
-        // Skip auth for static files and non-proxy/admin endpoints
-        var path = context.Request.Path.Value?.ToLowerInvariant() ?? "";
-        if (path.StartsWith("/index.html") ||
-            path.StartsWith("/css/") ||
-            path.StartsWith("/js/") ||
-            path.StartsWith("/favicon"))
+        // Skip auth for static files, admin API, and fallback routes
+        if (path.StartsWith("/css/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/js/", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/favicon", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase) ||
+            path.Equals("/index.html", StringComparison.OrdinalIgnoreCase))
         {
             await _next(context);
             return;
         }
 
-        // Check if API keys are configured
-        _logger.LogInformation("Getting API keys...");
         var apiKeys = configService.GetApiKeys();
-        _logger.LogInformation("API keys count: {Count}", apiKeys.Count);
         if (apiKeys.Count == 0)
         {
-            // No keys configured, allow all requests (setup mode)
-            _logger.LogInformation("No API keys, allowing request");
+            // No keys configured — setup mode, allow all
             await _next(context);
             return;
         }
 
-        // Extract API key from Authorization header
-        var authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
-        if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        var authHeader = context.Request.Headers.Authorization.ToString();
+        if (!authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
         {
             context.Response.StatusCode = 401;
             context.Response.ContentType = "application/json";
@@ -55,6 +50,7 @@ public class AuthMiddleware
 
         if (!isValid)
         {
+            _logger.LogDebug("Invalid API key attempted from {RemoteIp}", context.Connection.RemoteIpAddress);
             context.Response.StatusCode = 403;
             context.Response.ContentType = "application/json";
             await context.Response.WriteAsync("{\"error\":{\"message\":\"Invalid API key\",\"type\":\"auth_error\"}}");

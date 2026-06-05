@@ -3,7 +3,7 @@ set -e
 
 cd "$(dirname "$0")"
 
-PROJ="src/copilot-auto-byok.csproj"
+PROJ="src/CopilotAutoBYOK/copilot-auto-byok.csproj"
 OUT="publish"
 
 # 最小化运行时占用

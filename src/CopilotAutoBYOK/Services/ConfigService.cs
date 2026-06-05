@@ -113,10 +113,10 @@ public class ConfigService : IConfigService
             };
         }
 
+        // Entity not yet seeded — create it (under lock to avoid duplicate rows)
         lock (_autoPilotLock)
         {
-            using var context2 = _contextFactory.CreateDbContext();
-            entity = context2.AutoCopilot.OrderBy(e => e.Id).FirstOrDefault();
+            entity = context.AutoCopilot.OrderBy(e => e.Id).FirstOrDefault();
             if (entity != null)
             {
                 return new AutoCopilotBinding
@@ -127,8 +127,8 @@ public class ConfigService : IConfigService
             }
 
             entity = new AutoCopilotBindingEntity();
-            context2.AutoCopilot.Add(entity);
-            context2.SaveChanges();
+            context.AutoCopilot.Add(entity);
+            context.SaveChanges();
             return new AutoCopilotBinding
             {
                 CurrentModel = entity.CurrentModel,

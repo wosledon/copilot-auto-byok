@@ -217,23 +217,10 @@ internal class MetricsCollectingStream : Stream
 
     private static double CalculateCostStatic(RequestMetrics metrics)
     {
-        var pricing = new Dictionary<string, (double input, double output)>
-        {
-            ["gpt-4o"] = (2.50, 10.00),
-            ["gpt-4o-mini"] = (0.15, 0.60),
-            ["gpt-3.5-turbo"] = (0.50, 1.50),
-            ["gpt-4"] = (30.00, 60.00),
-            ["gpt-4-turbo"] = (10.00, 30.00),
-            ["claude-3-5-sonnet-20241022"] = (3.00, 15.00),
-            ["claude-3-opus-20240229"] = (15.00, 75.00),
-            ["claude-3-sonnet-20240229"] = (3.00, 15.00),
-            ["claude-3-haiku-20240307"] = (0.25, 1.25),
-        };
-
         var key = metrics.ActualModel.ToLower();
-        if (!pricing.TryGetValue(key, out var price))
+        if (!ProxyService.Pricing.TryGetValue(key, out var price))
         {
-            foreach (var (k, p) in pricing)
+            foreach (var (k, p) in ProxyService.Pricing)
             {
                 if (key.Contains(k.ToLower()) || k.ToLower().Contains(key))
                 {
@@ -259,7 +246,7 @@ public class ProxyService : IProxyService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<ProxyService> _logger;
 
-    private static readonly Dictionary<string, (double input, double output)> Pricing = new()
+    internal static readonly Dictionary<string, (double input, double output)> Pricing = new()
     {
         ["gpt-4o"] = (2.50, 10.00),
         ["gpt-4o-mini"] = (0.15, 0.60),
@@ -482,25 +469,6 @@ public class ProxyService : IProxyService
         );
     }
 
-    private async Task ProcessStreamingResponse(HttpResponseMessage response, RequestMetrics metrics, Stopwatch stopwatch, string protocol)
-    {
-        var stream = await response.Content.ReadAsStreamAsync();
-        var memoryStream = new MemoryStream();
-        await stream.CopyToAsync(memoryStream);
-        memoryStream.Position = 0;
-
-        var content = memoryStream.ToArray();
-        var contentText = System.Text.Encoding.UTF8.GetString(content);
-
-        if (protocol == "openai")
-            ParseOpenAIStreamingUsage(contentText, metrics);
-        else
-            ParseAnthropicStreamingUsage(contentText, metrics);
-
-        metrics.TotalDurationMs = stopwatch.ElapsedMilliseconds;
-        response.Content = new ByteArrayContent(content);
-    }
-
     private void ParseOpenAIUsage(string responseContent, RequestMetrics metrics)
     {
         try
@@ -523,29 +491,6 @@ public class ProxyService : IProxyService
         catch { }
     }
 
-    private void ParseOpenAIStreamingUsage(string contentText, RequestMetrics metrics)
-    {
-        try
-        {
-            var lines = contentText.Split('\n');
-            foreach (var line in lines)
-            {
-                if (line.StartsWith("data: ") && !line.Contains("[DONE]"))
-                {
-                    var json = line["data: ".Length..];
-                    using var doc = JsonDocument.Parse(json);
-                    if (doc.RootElement.TryGetProperty("usage", out var usage))
-                    {
-                        metrics.PromptTokens = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
-                        metrics.CompletionTokens = usage.TryGetProperty("completion_tokens", out var ct) ? ct.GetInt32() : 0;
-                        metrics.TotalTokens = metrics.PromptTokens + metrics.CompletionTokens;
-                    }
-                }
-            }
-        }
-        catch { }
-    }
-
     private void ParseAnthropicUsage(string responseContent, RequestMetrics metrics)
     {
         try
@@ -561,44 +506,6 @@ public class ProxyService : IProxyService
                 {
                     metrics.CachedTokens = cacheRead.GetInt32();
                     metrics.IsCacheHit = metrics.CachedTokens > 0;
-                }
-            }
-        }
-        catch { }
-    }
-
-    private void ParseAnthropicStreamingUsage(string contentText, RequestMetrics metrics)
-    {
-        try
-        {
-            var lines = contentText.Split('\n');
-            foreach (var line in lines)
-            {
-                if (line.StartsWith("data: "))
-                {
-                    var json = line["data: ".Length..];
-                    using var doc = JsonDocument.Parse(json);
-                    if (doc.RootElement.TryGetProperty("type", out var type) &&
-                        type.GetString() == "message_delta" &&
-                        doc.RootElement.TryGetProperty("usage", out var usage))
-                    {
-                        metrics.CompletionTokens = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
-                        metrics.TotalTokens = metrics.PromptTokens + metrics.CompletionTokens;
-
-                        if (usage.TryGetProperty("cache_read_input_tokens", out var cacheRead))
-                        {
-                            metrics.CachedTokens = cacheRead.GetInt32();
-                            metrics.IsCacheHit = metrics.CachedTokens > 0;
-                        }
-                    }
-                    if (doc.RootElement.TryGetProperty("type", out var type2) &&
-                        type2.GetString() == "message_start" &&
-                        doc.RootElement.TryGetProperty("message", out var message) &&
-                        message.TryGetProperty("usage", out var usage2))
-                    {
-                        metrics.PromptTokens = usage2.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
-                        metrics.TotalTokens = metrics.PromptTokens + metrics.CompletionTokens;
-                    }
                 }
             }
         }

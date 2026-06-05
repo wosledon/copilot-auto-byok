@@ -82,27 +82,42 @@ public class MetricsService : IMetricsService
         using var context = await _contextFactory.CreateDbContextAsync();
         var from = GetPeriodStart(period);
 
-        var query = context.RequestMetrics.AsNoTracking().Where(r => r.Timestamp >= from);
+        // Single query — fetch all needed fields, aggregate in memory
+        var all = await context.RequestMetrics
+            .AsNoTracking()
+            .Where(r => r.Timestamp >= from)
+            .Select(r => new
+            {
+                r.IsSuccess,
+                r.PromptTokens,
+                r.CompletionTokens,
+                r.TotalTokens,
+                r.CachedTokens,
+                r.EstimatedCost,
+                r.LatencyMs,
+                r.TokensPerSecond,
+                r.IsCacheHit,
+                r.ActualModel
+            })
+            .ToListAsync();
 
-        var total = await query.CountAsync();
-        var success = await query.Where(r => r.IsSuccess).CountAsync();
-        var failed = total - success;
-
-        var promptTokens = await query.SumAsync(r => (long)r.PromptTokens);
-        var completionTokens = await query.SumAsync(r => (long)r.CompletionTokens);
-        var totalTokens = await query.SumAsync(r => (long)r.TotalTokens);
-        var cachedTokens = await query.SumAsync(r => (long)r.CachedTokens);
-        var estimatedCost = await query.SumAsync(r => r.EstimatedCost);
-        var avgLatency = await query.AverageAsync(r => (double?)r.LatencyMs) ?? 0;
-        var avgTps = await query.AverageAsync(r => (double?)r.TokensPerSecond) ?? 0;
-        var cacheHits = await query.Where(r => r.IsCacheHit).CountAsync();
+        var total = all.Count;
+        var success = all.Count(r => r.IsSuccess);
+        var promptTokens = all.Sum(r => (long)r.PromptTokens);
+        var completionTokens = all.Sum(r => (long)r.CompletionTokens);
+        var totalTokens = all.Sum(r => (long)r.TotalTokens);
+        var cachedTokens = all.Sum(r => (long)r.CachedTokens);
+        var estimatedCost = all.Sum(r => r.EstimatedCost);
+        var avgLatency = all.Count > 0 ? all.Average(r => (double)r.LatencyMs) : 0;
+        var avgTps = all.Count > 0 ? all.Average(r => (double)r.TokensPerSecond) : 0;
+        var cacheHits = all.Count(r => r.IsCacheHit);
 
         var summary = new MetricsSummary
         {
             Period = period,
             TotalRequests = total,
             SuccessfulRequests = success,
-            FailedRequests = failed,
+            FailedRequests = total - success,
             SuccessRate = total > 0 ? Math.Round((double)success / total * 100, 2) : 0,
             TokenUsage = new TokenUsageSummary
             {
@@ -120,19 +135,19 @@ public class MetricsService : IMetricsService
             }
         };
 
-        // Percentiles
-        var latencies = await query
+        // Percentiles (computed from already-loaded data)
+        var latencies = all
             .Where(r => r.LatencyMs > 0)
-            .OrderBy(r => r.LatencyMs)
             .Select(r => (double)r.LatencyMs)
-            .ToListAsync();
+            .OrderBy(l => l)
+            .ToList();
 
         summary.Performance.P50LatencyMs = GetPercentile(latencies, 0.5);
         summary.Performance.P95LatencyMs = GetPercentile(latencies, 0.95);
         summary.Performance.P99LatencyMs = GetPercentile(latencies, 0.99);
 
-        // Model breakdown
-        summary.ModelBreakdown = await query
+        // Model breakdown (computed from already-loaded data)
+        summary.ModelBreakdown = all
             .GroupBy(r => r.ActualModel)
             .Select(g => new ModelBreakdown
             {
@@ -143,7 +158,7 @@ public class MetricsService : IMetricsService
                 EstimatedCost = g.Sum(r => r.EstimatedCost)
             })
             .OrderByDescending(m => m.Requests)
-            .ToListAsync();
+            .ToList();
 
         return summary;
     }
@@ -153,11 +168,15 @@ public class MetricsService : IMetricsService
         using var context = await _contextFactory.CreateDbContextAsync();
         var oneHourAgo = DateTime.UtcNow.AddHours(-1);
 
-        var query = context.RequestMetrics.AsNoTracking().Where(r => r.Timestamp >= oneHourAgo);
+        var all = await context.RequestMetrics
+            .AsNoTracking()
+            .Where(r => r.Timestamp >= oneHourAgo)
+            .Select(r => new { r.TotalTokens, r.LatencyMs })
+            .ToListAsync();
 
-        var requests = await query.CountAsync();
-        var tokens = await query.SumAsync(r => (long?)r.TotalTokens) ?? 0;
-        var avgLatency = await query.AverageAsync(r => (double?)r.LatencyMs) ?? 0;
+        var requests = all.Count;
+        var tokens = all.Sum(r => (long)r.TotalTokens);
+        var avgLatency = all.Count > 0 ? all.Average(r => (double)r.LatencyMs) : 0;
 
         return new Dictionary<string, object>
         {
